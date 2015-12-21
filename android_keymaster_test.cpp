@@ -302,7 +302,7 @@ TEST_P(CheckSupported, SupportedDigests) {
     ASSERT_EQ(KM_ERROR_OK, device()->get_supported_digests(device(), KM_ALGORITHM_HMAC,
                                                            KM_PURPOSE_SIGN, &digests, &len));
     if (GetParam()->minimal_digest_set()) {
-        EXPECT_TRUE(ResponseContains({KM_DIGEST_SHA_2_256}, digests, len));
+        EXPECT_TRUE(ResponseContains(KM_DIGEST_SHA_2_256, digests, len));
     } else {
         EXPECT_TRUE(ResponseContains({KM_DIGEST_SHA_2_224, KM_DIGEST_SHA_2_256, KM_DIGEST_SHA_2_384,
                                       KM_DIGEST_SHA_2_512, KM_DIGEST_SHA1},
@@ -793,6 +793,29 @@ TEST_P(SigningOperationsTest, RsaSignWithEncryptionKey) {
 
     if (GetParam()->algorithm_in_km0_hardware(KM_ALGORITHM_RSA))
         EXPECT_EQ(2, GetParam()->keymaster0_calls());
+}
+
+TEST_P(SigningOperationsTest, RsaSignTooLargeMessage) {
+    ASSERT_EQ(KM_ERROR_OK, GenerateKey(AuthorizationSetBuilder()
+                                           .RsaSigningKey(256, 3)
+                                           .Digest(KM_DIGEST_NONE)
+                                           .Padding(KM_PAD_NONE)));
+    string message(256 / 8, static_cast<char>(0xff));
+    string signature;
+    AuthorizationSet begin_params(client_params());
+    begin_params.push_back(TAG_PADDING, KM_PAD_NONE);
+    begin_params.push_back(TAG_DIGEST, KM_DIGEST_NONE);
+    ASSERT_EQ(KM_ERROR_OK, BeginOperation(KM_PURPOSE_SIGN, begin_params));
+    string result;
+    size_t input_consumed;
+    ASSERT_EQ(KM_ERROR_OK, UpdateOperation(message, &result, &input_consumed));
+    ASSERT_EQ(message.size(), input_consumed);
+    string output;
+    ASSERT_EQ(KM_ERROR_INVALID_ARGUMENT, FinishOperation(&output));
+
+
+    if (GetParam()->algorithm_in_km0_hardware(KM_ALGORITHM_RSA))
+        EXPECT_EQ(3, GetParam()->keymaster0_calls());
 }
 
 TEST_P(SigningOperationsTest, EcdsaSuccess) {
