@@ -28,6 +28,9 @@
 
 namespace keymaster {
 
+constexpr uint kCurrentKeymasterVersion = 3;
+constexpr uint kCurrentAttestationVersion = 2;
+
 struct stack_st_ASN1_TYPE_Delete {
     void operator()(stack_st_ASN1_TYPE* p) { sk_ASN1_TYPE_free(p); }
 };
@@ -488,15 +491,33 @@ keymaster_error_t build_attestation_record(const AuthorizationSet& attestation_p
     if (tee_enforced.empty()) {
         // Software key.
         keymaster_security_level = KM_SECURITY_LEVEL_SOFTWARE;
-        keymaster_version = 2;
+        keymaster_version = kCurrentKeymasterVersion;
     } else {
         keymaster_security_level = KM_SECURITY_LEVEL_TRUSTED_ENVIRONMENT;
         switch (context.GetSecurityLevel()) {
-        case KM_SECURITY_LEVEL_TRUSTED_ENVIRONMENT:
-            // We're running in a TEE, so the key is KM2.
-            keymaster_version = 2;
-            break;
+        case KM_SECURITY_LEVEL_TRUSTED_ENVIRONMENT: {
+            keymaster_version = kCurrentKeymasterVersion;
 
+            // Root of trust is only available in TEE
+            KM_AUTH_LIST* tee_record = key_desc->tee_enforced;
+            tee_record->root_of_trust = KM_ROOT_OF_TRUST_new();
+            keymaster_blob_t verified_boot_key;
+            keymaster_verified_boot_t verified_boot_state;
+            bool device_locked;
+            keymaster_error_t error = context.GetVerifiedBootParams(
+                &verified_boot_key, &verified_boot_state, &device_locked);
+            if (error != KM_ERROR_OK)
+                return error;
+            if (verified_boot_key.data_length &&
+                !ASN1_OCTET_STRING_set(tee_record->root_of_trust->verified_boot_key,
+                                       verified_boot_key.data, verified_boot_key.data_length))
+                return TranslateLastOpenSslError();
+            tee_record->root_of_trust->device_locked = (int*)device_locked;
+            if (!ASN1_ENUMERATED_set(tee_record->root_of_trust->verified_boot_state,
+                                     verified_boot_state))
+                return TranslateLastOpenSslError();
+            break;
+        }
         case KM_SECURITY_LEVEL_SOFTWARE:
             // We're running in software, wrapping some KM hardware.  Is it KM0 or KM1?  KM1 keys
             // have the purpose in the tee_enforced list.  It's possible that a key could be created
@@ -511,7 +532,7 @@ keymaster_error_t build_attestation_record(const AuthorizationSet& attestation_p
             return KM_ERROR_UNKNOWN_ERROR;
     }
 
-    if (!ASN1_INTEGER_set(key_desc->attestation_version, 1) ||
+    if (!ASN1_INTEGER_set(key_desc->attestation_version, kCurrentAttestationVersion) ||
         !ASN1_ENUMERATED_set(key_desc->attestation_security_level, context.GetSecurityLevel()) ||
         !ASN1_INTEGER_set(key_desc->keymaster_version, keymaster_version) ||
         !ASN1_ENUMERATED_set(key_desc->keymaster_security_level, keymaster_security_level))
@@ -583,7 +604,7 @@ keymaster_error_t build_attestation_record(const AuthorizationSet& attestation_p
     if (len < 0)
         return TranslateLastOpenSslError();
     *asn1_key_desc_len = len;
-    asn1_key_desc->reset(new uint8_t[*asn1_key_desc_len]);
+    asn1_key_desc->reset(new(std::nothrow) uint8_t[*asn1_key_desc_len]);
     if (!asn1_key_desc->get())
         return KM_ERROR_MEMORY_ALLOCATION_FAILED;
     uint8_t* p = asn1_key_desc->get();
