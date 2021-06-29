@@ -53,22 +53,12 @@ ErrMsgOr<bssl::UniquePtr<EVP_CIPHER_CTX>> aesGcmInitAndProcessAad(const bytevec&
 
 }  // namespace
 
-ErrMsgOr<HmacSha256> generateHmacSha256(const bytevec& key, const bytevec& data) {
-    HmacSha256 digest;
-    unsigned int outLen;
-    uint8_t* out = HMAC(EVP_sha256(),              //
-                        key.data(), key.size(),    //
-                        data.data(), data.size(),  //
-                        digest.data(), &outLen);
-
-    if (out == nullptr || outLen != digest.size()) {
-        return "Error generating HMAC";
+ErrMsgOr<bytevec> generateCoseMac0Mac(const bytevec& macKey, const bytevec& externalAad,
+                                      const bytevec& payload) {
+    if (macKey.empty()) {
+        return "Empty MAC key";
     }
-    return digest;
-}
 
-ErrMsgOr<HmacSha256> generateCoseMac0Mac(HmacSha256Function macFunction, const bytevec& externalAad,
-                                         const bytevec& payload) {
     auto macStructure = cppbor::Array()
                             .add("MAC0")
                             .add(cppbor::Map().add(ALGORITHM, HMAC_256).canonicalize().encode())
@@ -76,24 +66,32 @@ ErrMsgOr<HmacSha256> generateCoseMac0Mac(HmacSha256Function macFunction, const b
                             .add(payload)
                             .encode();
 
-    auto macTag = macFunction(macStructure);
-    if (!macTag) {
+    bytevec macTag(SHA256_DIGEST_LENGTH);
+    uint8_t* out = macTag.data();
+    unsigned int outLen;
+    out = HMAC(EVP_sha256(),                              //
+               macKey.data(), macKey.size(),              //
+               macStructure.data(), macStructure.size(),  //
+               out, &outLen);
+
+    assert(out != nullptr && outLen == macTag.size());
+    if (out == nullptr || outLen != macTag.size()) {
         return "Error computing public key MAC";
     }
 
-    return *macTag;
+    return macTag;
 }
 
-ErrMsgOr<cppbor::Array> constructCoseMac0(HmacSha256Function macFunction,
-                                          const bytevec& externalAad, const bytevec& payload) {
-    auto tag = generateCoseMac0Mac(macFunction, externalAad, payload);
+ErrMsgOr<cppbor::Array> constructCoseMac0(const bytevec& macKey, const bytevec& externalAad,
+                                          const bytevec& payload) {
+    auto tag = generateCoseMac0Mac(macKey, externalAad, payload);
     if (!tag) return tag.moveMessage();
 
     return cppbor::Array()
         .add(cppbor::Map().add(ALGORITHM, HMAC_256).canonicalize().encode())
         .add(cppbor::Map() /* unprotected */)
         .add(payload)
-        .add(std::pair(tag->begin(), tag->end()));
+        .add(tag.moveValue());
 }
 
 ErrMsgOr<bytevec /* payload */> verifyAndParseCoseMac0(const cppbor::Item* macItem,
@@ -120,10 +118,7 @@ ErrMsgOr<bytevec /* payload */> verifyAndParseCoseMac0(const cppbor::Item* macIt
         return "Unsupported Mac0 algorithm";
     }
 
-    auto macFunction = [&macKey](const bytevec& input) {
-        return generateHmacSha256(macKey, input);
-    };
-    auto macTag = generateCoseMac0Mac(macFunction, {} /* external_aad */, payload->value());
+    auto macTag = generateCoseMac0Mac(macKey, {} /* external_aad */, payload->value());
     if (!macTag) return macTag.moveMessage();
 
     if (macTag->size() != tag->value().size() ||
