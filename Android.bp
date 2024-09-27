@@ -106,9 +106,6 @@ cc_library_shared {
 // the function-based keymaster HAL API to the message-based AndroidKeymaster API.
 cc_library {
     name: "libkeymaster_portable",
-    lto: {
-        thin: true,
-    },
     srcs: [
         "android_keymaster/android_keymaster.cpp",
         "android_keymaster/android_keymaster_messages.cpp",
